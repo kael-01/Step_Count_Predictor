@@ -17,39 +17,42 @@ def load_and_prepare_data(data_path: Path) -> pd.DataFrame:
 
     df = pd.read_csv(data_path)
 
-    for required_column in ["date", "steps"]:
+    required_columns = ["day", "steps"]
+    for required_column in required_columns:
         if required_column not in df.columns:
             raise ValueError(f"Missing required column: {required_column}")
 
-    has_sleep_hours = "sleep_hours" in df.columns
     has_sleep_minutes = "sleep_minutes" in df.columns
-    if not (has_sleep_hours or has_sleep_minutes):
-        raise ValueError("Need one of these columns: sleep_hours or sleep_minutes")
+    has_sleep_hours = "sleep_hours" in df.columns
+    if not (has_sleep_minutes or has_sleep_hours):
+        raise ValueError("Need one of these columns: sleep_minutes or sleep_hours")
 
     has_screen_minutes = "screen_minutes" in df.columns
     has_screen_hours = "screen_hours" in df.columns
     if not (has_screen_minutes or has_screen_hours):
         raise ValueError("Need one of these columns: screen_minutes or screen_hours")
 
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    invalid_date_count = int(df["date"].isna().sum())
-    if invalid_date_count > 0:
-        print(f"Warning: dropped {invalid_date_count} row(s) with invalid date.")
-        df = df.dropna(subset=["date"])
+    df["day"] = pd.to_numeric(df["day"], errors="coerce")
+    invalid_day_count = int(df["day"].isna().sum())
+    if invalid_day_count > 0:
+        print(f"Warning: dropped {invalid_day_count} row(s) with invalid day.")
+        df = df.dropna(subset=["day"])
 
-    df = df.sort_values("date").copy()
+    df = df.sort_values("day").copy()
 
-    duplicate_count = int(df.duplicated(subset=["date"]).sum())
+    duplicate_count = int(df.duplicated(subset=["day"]).sum())
     if duplicate_count > 0:
-        print(f"Warning: dropped {duplicate_count} duplicate date row(s), kept first.")
-        df = df.drop_duplicates(subset=["date"], keep="first")
+        print(f"Warning: dropped {duplicate_count} duplicate day row(s), kept first.")
+        df = df.drop_duplicates(subset=["day"], keep="first")
 
+    df["day"] = df["day"].astype(int)
     df["steps"] = pd.to_numeric(df["steps"], errors="coerce")
 
-    if has_sleep_hours:
-        df["sleep_hours"] = pd.to_numeric(df["sleep_hours"], errors="coerce")
     if has_sleep_minutes:
         df["sleep_minutes"] = pd.to_numeric(df["sleep_minutes"], errors="coerce")
+    if has_sleep_hours:
+        df["sleep_hours"] = pd.to_numeric(df["sleep_hours"], errors="coerce")
+
     if has_screen_minutes:
         df["screen_minutes"] = pd.to_numeric(df["screen_minutes"], errors="coerce")
     if has_screen_hours:
@@ -57,21 +60,21 @@ def load_and_prepare_data(data_path: Path) -> pd.DataFrame:
 
     df["steps_t"] = df["steps"]
 
-    if has_sleep_hours and has_sleep_minutes:
-        df["sleep_t"] = df["sleep_hours"].fillna(df["sleep_minutes"] / 60.0)
-    elif has_sleep_hours:
-        df["sleep_t"] = df["sleep_hours"]
+    if has_sleep_minutes and has_sleep_hours:
+        df["sleep_minutes_t"] = df["sleep_minutes"].fillna(df["sleep_hours"] * 60.0)
+    elif has_sleep_minutes:
+        df["sleep_minutes_t"] = df["sleep_minutes"]
     else:
-        df["sleep_t"] = df["sleep_minutes"] / 60.0
+        df["sleep_minutes_t"] = df["sleep_hours"] * 60.0
 
     if has_screen_minutes and has_screen_hours:
-        df["screen_t"] = df["screen_minutes"].fillna(df["screen_hours"] * 60.0)
+        df["screen_minutes_t"] = df["screen_minutes"].fillna(df["screen_hours"] * 60.0)
     elif has_screen_minutes:
-        df["screen_t"] = df["screen_minutes"]
+        df["screen_minutes_t"] = df["screen_minutes"]
     else:
-        df["screen_t"] = df["screen_hours"] * 60.0
+        df["screen_minutes_t"] = df["screen_hours"] * 60.0
 
-    df["date_next"] = df["date"].shift(-1)
+    df["day_next"] = df["day"].shift(-1)
     df["steps_next_true"] = df["steps"].shift(-1)
 
     if len(df) == 0:
@@ -80,11 +83,11 @@ def load_and_prepare_data(data_path: Path) -> pd.DataFrame:
     df = df.iloc[:-1].copy()
 
     required_after_shift = [
-        "date",
-        "date_next",
+        "day",
+        "day_next",
         "steps_t",
-        "sleep_t",
-        "screen_t",
+        "sleep_minutes_t",
+        "screen_minutes_t",
         "steps_next_true",
     ]
     before_drop_missing = len(df)
@@ -95,9 +98,17 @@ def load_and_prepare_data(data_path: Path) -> pd.DataFrame:
             f"Warning: dropped {dropped_missing_count} row(s) with missing required fields after target shift."
         )
 
-    df = df.rename(columns={"date": "date_t"})
+    df["day_next"] = df["day_next"].astype(int)
+    df = df.rename(columns={"day": "day_t"})
     df = df[
-        ["date_t", "date_next", "steps_t", "sleep_t", "screen_t", "steps_next_true"]
+        [
+            "day_t",
+            "day_next",
+            "steps_t",
+            "sleep_minutes_t",
+            "screen_minutes_t",
+            "steps_next_true",
+        ]
     ].copy()
 
     return df
@@ -169,34 +180,34 @@ def make_figures(test_df: pd.DataFrame, output_fig_dir: Path) -> None:
     plt.close(figure)
 
     plt.figure(figsize=(9, 5))
-    date_values = pd.to_datetime(test_df["date_next"])
+    day_values = pd.to_numeric(test_df["day_next"])
     plt.plot(
-        date_values,
+        day_values,
         y_true - test_df["lr_pred"],
         marker="o",
         label="LR residual",
     )
     plt.plot(
-        date_values,
+        day_values,
         y_true - test_df["tree_pred"],
         marker="s",
         label="Tree residual",
     )
     plt.axhline(0.0, linestyle="--")
 
-    plt.title("Residuals Over Time")
-    plt.xlabel("date_next")
+    plt.title("Residuals Over Day Index")
+    plt.xlabel("day_next")
     plt.ylabel("Residual (y_true - pred)")
-    plt.xticks(rotation=45)
+    plt.xticks(day_values)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(output_fig_dir / "residuals_over_time.png", dpi=150)
+    plt.savefig(output_fig_dir / "residuals_over_day.png", dpi=150)
     plt.close()
 
 
 def make_readable_comparison_table(test_df: pd.DataFrame) -> pd.DataFrame:
     readable_df = test_df[
-        ["date_t", "date_next", "steps_next_true", "lr_pred", "tree_pred"]
+        ["day_t", "day_next", "steps_next_true", "lr_pred", "tree_pred"]
     ].copy()
     readable_df = readable_df.rename(
         columns={
@@ -235,7 +246,7 @@ def main() -> None:
     prepared_df = load_and_prepare_data(data_path)
     train_df, test_df = chronological_split(prepared_df)
 
-    feature_columns = ["steps_t", "sleep_t", "screen_t"]
+    feature_columns = ["steps_t", "sleep_minutes_t", "screen_minutes_t"]
 
     X_train = train_df[feature_columns]
     y_train = train_df["steps_next_true"]
@@ -250,7 +261,7 @@ def main() -> None:
     tree_model, best_params, importances_df = train_tuned_tree(X_train, y_train)
     tree_pred = tree_model.predict(X_test)
 
-    predictions_df = test_df[["date_t", "date_next", "steps_t", "steps_next_true"]].copy()
+    predictions_df = test_df[["day_t", "day_next", "steps_t", "steps_next_true"]].copy()
     predictions_df["baseline_pred"] = baseline_pred
     predictions_df["lr_pred"] = lr_pred
     predictions_df["tree_pred"] = tree_pred
@@ -277,8 +288,8 @@ def main() -> None:
 
     predictions_df = predictions_df[
         [
-            "date_t",
-            "date_next",
+            "day_t",
+            "day_next",
             "steps_t",
             "steps_next_true",
             "baseline_pred",
