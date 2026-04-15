@@ -11,6 +11,11 @@ from lr_model import train_linear_regression
 from tree_model import train_tuned_tree
 
 
+RAW_TRAIN_END_DAY = 60
+RAW_TEST_START_DAY = 61
+EXPECTED_RAW_DAYS = 90
+
+
 def load_and_prepare_data(data_path: Path) -> pd.DataFrame:
     if not data_path.exists():
         raise FileNotFoundError(f"Could not find data file: {data_path}")
@@ -57,6 +62,12 @@ def load_and_prepare_data(data_path: Path) -> pd.DataFrame:
         df["screen_minutes"] = pd.to_numeric(df["screen_minutes"], errors="coerce")
     if has_screen_hours:
         df["screen_hours"] = pd.to_numeric(df["screen_hours"], errors="coerce")
+
+    raw_day_count = len(df)
+    if raw_day_count != EXPECTED_RAW_DAYS:
+        print(
+            f"Warning: expected {EXPECTED_RAW_DAYS} raw day rows, found {raw_day_count}."
+        )
 
     df["steps_t"] = df["steps"]
 
@@ -114,21 +125,20 @@ def load_and_prepare_data(data_path: Path) -> pd.DataFrame:
     return df
 
 
-def chronological_split(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    n_rows = len(df)
-    if n_rows < 2:
-        raise ValueError("Prepared data is too small. Need at least 2 rows.")
+def fixed_chronological_split(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Split by target period so that targets for days 1-60 are training targets and
+    targets for days 61-90 are test targets.
 
-    test_size = max(1, round(0.2 * n_rows))
-    if test_size >= n_rows:
-        test_size = 1
-
-    split_index = n_rows - test_size
-    train_df = df.iloc[:split_index].copy()
-    test_df = df.iloc[split_index:].copy()
+    Because the target is next-day steps, this yields:
+    - training rows: day_t 1-59 -> day_next 2-60
+    - testing rows: day_t 60-89 -> day_next 61-90
+    """
+    train_df = df.loc[df["day_next"] <= RAW_TRAIN_END_DAY].copy()
+    test_df = df.loc[df["day_next"] >= RAW_TEST_START_DAY].copy()
 
     if len(train_df) == 0 or len(test_df) == 0:
-        raise ValueError("Chronological split failed. Train or test is empty.")
+        raise ValueError("Fixed chronological split failed. Train or test is empty.")
 
     return train_df, test_df
 
@@ -152,35 +162,48 @@ def make_figures(test_df: pd.DataFrame, output_fig_dir: Path) -> None:
 
     min_value = min(
         float(y_true.min()),
+        float(test_df["baseline_pred"].min()),
         float(test_df["lr_pred"].min()),
         float(test_df["tree_pred"].min()),
     )
     max_value = max(
         float(y_true.max()),
+        float(test_df["baseline_pred"].max()),
         float(test_df["lr_pred"].max()),
         float(test_df["tree_pred"].max()),
     )
 
-    figure, axes = plt.subplots(1, 2, figsize=(12, 5), sharex=True, sharey=True)
+    figure, axes = plt.subplots(1, 3, figsize=(16, 5), sharex=True, sharey=True)
 
-    axes[0].scatter(y_true, test_df["lr_pred"], color="#1f77b4", marker="o")
+    axes[0].scatter(y_true, test_df["baseline_pred"], marker="^")
     axes[0].plot([min_value, max_value], [min_value, max_value], "k--")
-    axes[0].set_title("Linear Regression\nPredicted vs Actual")
+    axes[0].set_title("Baseline\nPredicted vs Actual")
     axes[0].set_xlabel("Actual Next-Day Steps")
     axes[0].set_ylabel("Predicted Next-Day Steps")
 
-    axes[1].scatter(y_true, test_df["tree_pred"], color="#ff7f0e", marker="s")
+    axes[1].scatter(y_true, test_df["lr_pred"], marker="o")
     axes[1].plot([min_value, max_value], [min_value, max_value], "k--")
-    axes[1].set_title("Decision Tree\nPredicted vs Actual")
+    axes[1].set_title("Linear Regression\nPredicted vs Actual")
     axes[1].set_xlabel("Actual Next-Day Steps")
+
+    axes[2].scatter(y_true, test_df["tree_pred"], marker="s")
+    axes[2].plot([min_value, max_value], [min_value, max_value], "k--")
+    axes[2].set_title("Decision Tree\nPredicted vs Actual")
+    axes[2].set_xlabel("Actual Next-Day Steps")
 
     figure.suptitle("Model Predictions vs Actual (Test Set)")
     figure.tight_layout()
     figure.savefig(output_fig_dir / "pred_vs_actual.png", dpi=150)
     plt.close(figure)
 
-    plt.figure(figsize=(9, 5))
+    plt.figure(figsize=(10, 5))
     day_values = pd.to_numeric(test_df["day_next"])
+    plt.plot(
+        day_values,
+        y_true - test_df["baseline_pred"],
+        marker="^",
+        label="Baseline residual",
+    )
     plt.plot(
         day_values,
         y_true - test_df["lr_pred"],
@@ -207,14 +230,25 @@ def make_figures(test_df: pd.DataFrame, output_fig_dir: Path) -> None:
 
 def make_readable_comparison_table(test_df: pd.DataFrame) -> pd.DataFrame:
     readable_df = test_df[
-        ["day_t", "day_next", "steps_next_true", "lr_pred", "tree_pred"]
+        [
+            "day_t",
+            "day_next",
+            "steps_next_true",
+            "baseline_pred",
+            "lr_pred",
+            "tree_pred",
+        ]
     ].copy()
     readable_df = readable_df.rename(
         columns={
             "steps_next_true": "actual_steps_next",
+            "baseline_pred": "baseline_predicted_steps",
             "lr_pred": "lr_predicted_steps",
             "tree_pred": "tree_predicted_steps",
         }
+    )
+    readable_df["baseline_error"] = (
+        readable_df["actual_steps_next"] - readable_df["baseline_predicted_steps"]
     )
     readable_df["lr_error"] = (
         readable_df["actual_steps_next"] - readable_df["lr_predicted_steps"]
@@ -225,8 +259,10 @@ def make_readable_comparison_table(test_df: pd.DataFrame) -> pd.DataFrame:
 
     numeric_cols = [
         "actual_steps_next",
+        "baseline_predicted_steps",
         "lr_predicted_steps",
         "tree_predicted_steps",
+        "baseline_error",
         "lr_error",
         "tree_error",
     ]
@@ -244,7 +280,7 @@ def main() -> None:
     output_fig_dir.mkdir(parents=True, exist_ok=True)
 
     prepared_df = load_and_prepare_data(data_path)
-    train_df, test_df = chronological_split(prepared_df)
+    train_df, test_df = fixed_chronological_split(prepared_df)
 
     feature_columns = ["steps_t", "sleep_minutes_t", "screen_minutes_t"]
 
@@ -334,11 +370,37 @@ def main() -> None:
     readable_comparison_path = output_dir / "predictions_readable.csv"
     readable_comparison_df.to_csv(readable_comparison_path, index=False)
 
+    coefficients_path = output_dir / "lr_coefficients.csv"
+    coefficients_df.to_csv(coefficients_path, index=False)
+
+    importances_path = output_dir / "tree_feature_importances.csv"
+    importances_df.to_csv(importances_path, index=False)
+
+    split_summary_df = pd.DataFrame(
+        [
+            {
+                "raw_days_expected": EXPECTED_RAW_DAYS,
+                "raw_train_end_day": RAW_TRAIN_END_DAY,
+                "raw_test_start_day": RAW_TEST_START_DAY,
+                "prepared_rows": len(prepared_df),
+                "train_rows": len(train_df),
+                "test_rows": len(test_df),
+                "train_target_day_min": int(train_df["day_next"].min()),
+                "train_target_day_max": int(train_df["day_next"].max()),
+                "test_target_day_min": int(test_df["day_next"].min()),
+                "test_target_day_max": int(test_df["day_next"].max()),
+            }
+        ]
+    )
+    split_summary_df.to_csv(output_dir / "split_summary.csv", index=False)
+
     make_figures(predictions_df, output_fig_dir)
 
     print(
-        f"Rows -> total: {len(prepared_df)}, train: {len(train_df)}, test: {len(test_df)}"
+        f"Rows -> prepared: {len(prepared_df)}, train: {len(train_df)}, test: {len(test_df)}"
     )
+    print("Train targets cover day_next = 2..60; test targets cover day_next = 61..90.")
+
     print("\nLinear Regression coefficients:")
     print(coefficients_df.to_string(index=False))
     print(f"Intercept: {float(lr_model.intercept_):.4f}")
@@ -351,7 +413,7 @@ def main() -> None:
     print("\nMetrics:")
     print(metrics_df.to_string(index=False))
 
-    print("\nReadable predictions (actual vs LR vs Tree):")
+    print("\nReadable predictions (actual vs baseline vs LR vs Tree):")
     print(readable_comparison_df.to_string(index=False))
 
 
