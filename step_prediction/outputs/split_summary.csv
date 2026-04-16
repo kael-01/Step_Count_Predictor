@@ -1,0 +1,2 @@
+raw_days_expected,raw_train_end_day,raw_test_start_day,prepared_rows,train_rows,test_rows,train_target_day_min,train_target_day_max,test_target_day_min,test_target_day_max
+90,60,61,89,59,30,2,60,61,90

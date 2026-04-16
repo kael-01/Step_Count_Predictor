@@ -15,6 +15,21 @@ RAW_TRAIN_END_DAY = 60
 RAW_TEST_START_DAY = 61
 EXPECTED_RAW_DAYS = 90
 
+COLUMN_ALIASES = {
+    "steps": ["steps", "step_count"],
+    "sleep_minutes": ["sleep_minutes", "sleep_time_minutes"],
+    "sleep_hours": ["sleep_hours"],
+    "screen_minutes": ["screen_minutes", "screen_time_minutes"],
+    "screen_hours": ["screen_hours"],
+}
+
+
+def find_first_existing_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    for name in candidates:
+        if name in df.columns:
+            return name
+    return None
+
 
 def load_and_prepare_data(data_path: Path) -> pd.DataFrame:
     if not data_path.exists():
@@ -22,20 +37,26 @@ def load_and_prepare_data(data_path: Path) -> pd.DataFrame:
 
     df = pd.read_csv(data_path)
 
-    required_columns = ["day", "steps"]
-    for required_column in required_columns:
-        if required_column not in df.columns:
-            raise ValueError(f"Missing required column: {required_column}")
+    if "day" not in df.columns:
+        raise ValueError("Missing required column: day")
 
-    has_sleep_minutes = "sleep_minutes" in df.columns
-    has_sleep_hours = "sleep_hours" in df.columns
-    if not (has_sleep_minutes or has_sleep_hours):
-        raise ValueError("Need one of these columns: sleep_minutes or sleep_hours")
+    steps_col = find_first_existing_column(df, COLUMN_ALIASES["steps"])
+    if steps_col is None:
+        raise ValueError(f"Need one of these columns: {COLUMN_ALIASES['steps']}")
 
-    has_screen_minutes = "screen_minutes" in df.columns
-    has_screen_hours = "screen_hours" in df.columns
-    if not (has_screen_minutes or has_screen_hours):
-        raise ValueError("Need one of these columns: screen_minutes or screen_hours")
+    sleep_minutes_col = find_first_existing_column(df, COLUMN_ALIASES["sleep_minutes"])
+    sleep_hours_col = find_first_existing_column(df, COLUMN_ALIASES["sleep_hours"])
+    if sleep_minutes_col is None and sleep_hours_col is None:
+        raise ValueError(
+            f"Need one of these columns: {COLUMN_ALIASES['sleep_minutes'] + COLUMN_ALIASES['sleep_hours']}"
+        )
+
+    screen_minutes_col = find_first_existing_column(df, COLUMN_ALIASES["screen_minutes"])
+    screen_hours_col = find_first_existing_column(df, COLUMN_ALIASES["screen_hours"])
+    if screen_minutes_col is None and screen_hours_col is None:
+        raise ValueError(
+            f"Need one of these columns: {COLUMN_ALIASES['screen_minutes'] + COLUMN_ALIASES['screen_hours']}"
+        )
 
     df["day"] = pd.to_numeric(df["day"], errors="coerce")
     invalid_day_count = int(df["day"].isna().sum())
@@ -51,17 +72,17 @@ def load_and_prepare_data(data_path: Path) -> pd.DataFrame:
         df = df.drop_duplicates(subset=["day"], keep="first")
 
     df["day"] = df["day"].astype(int)
-    df["steps"] = pd.to_numeric(df["steps"], errors="coerce")
+    df[steps_col] = pd.to_numeric(df[steps_col], errors="coerce")
 
-    if has_sleep_minutes:
-        df["sleep_minutes"] = pd.to_numeric(df["sleep_minutes"], errors="coerce")
-    if has_sleep_hours:
-        df["sleep_hours"] = pd.to_numeric(df["sleep_hours"], errors="coerce")
+    if sleep_minutes_col is not None:
+        df[sleep_minutes_col] = pd.to_numeric(df[sleep_minutes_col], errors="coerce")
+    if sleep_hours_col is not None:
+        df[sleep_hours_col] = pd.to_numeric(df[sleep_hours_col], errors="coerce")
 
-    if has_screen_minutes:
-        df["screen_minutes"] = pd.to_numeric(df["screen_minutes"], errors="coerce")
-    if has_screen_hours:
-        df["screen_hours"] = pd.to_numeric(df["screen_hours"], errors="coerce")
+    if screen_minutes_col is not None:
+        df[screen_minutes_col] = pd.to_numeric(df[screen_minutes_col], errors="coerce")
+    if screen_hours_col is not None:
+        df[screen_hours_col] = pd.to_numeric(df[screen_hours_col], errors="coerce")
 
     raw_day_count = len(df)
     if raw_day_count != EXPECTED_RAW_DAYS:
@@ -69,24 +90,24 @@ def load_and_prepare_data(data_path: Path) -> pd.DataFrame:
             f"Warning: expected {EXPECTED_RAW_DAYS} raw day rows, found {raw_day_count}."
         )
 
-    df["steps_t"] = df["steps"]
+    df["steps_t"] = df[steps_col]
 
-    if has_sleep_minutes and has_sleep_hours:
-        df["sleep_minutes_t"] = df["sleep_minutes"].fillna(df["sleep_hours"] * 60.0)
-    elif has_sleep_minutes:
-        df["sleep_minutes_t"] = df["sleep_minutes"]
+    if sleep_minutes_col is not None and sleep_hours_col is not None:
+        df["sleep_minutes_t"] = df[sleep_minutes_col].fillna(df[sleep_hours_col] * 60.0)
+    elif sleep_minutes_col is not None:
+        df["sleep_minutes_t"] = df[sleep_minutes_col]
     else:
-        df["sleep_minutes_t"] = df["sleep_hours"] * 60.0
+        df["sleep_minutes_t"] = df[sleep_hours_col] * 60.0
 
-    if has_screen_minutes and has_screen_hours:
-        df["screen_minutes_t"] = df["screen_minutes"].fillna(df["screen_hours"] * 60.0)
-    elif has_screen_minutes:
-        df["screen_minutes_t"] = df["screen_minutes"]
+    if screen_minutes_col is not None and screen_hours_col is not None:
+        df["screen_minutes_t"] = df[screen_minutes_col].fillna(df[screen_hours_col] * 60.0)
+    elif screen_minutes_col is not None:
+        df["screen_minutes_t"] = df[screen_minutes_col]
     else:
-        df["screen_minutes_t"] = df["screen_hours"] * 60.0
+        df["screen_minutes_t"] = df[screen_hours_col] * 60.0
 
     df["day_next"] = df["day"].shift(-1)
-    df["steps_next_true"] = df["steps"].shift(-1)
+    df["steps_next_true"] = df[steps_col].shift(-1)
 
     if len(df) == 0:
         raise ValueError("No rows available after initial cleaning.")
@@ -126,14 +147,6 @@ def load_and_prepare_data(data_path: Path) -> pd.DataFrame:
 
 
 def fixed_chronological_split(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Split by target period so that targets for days 1-60 are training targets and
-    targets for days 61-90 are test targets.
-
-    Because the target is next-day steps, this yields:
-    - training rows: day_t 1-59 -> day_next 2-60
-    - testing rows: day_t 60-89 -> day_next 61-90
-    """
     train_df = df.loc[df["day_next"] <= RAW_TRAIN_END_DAY].copy()
     test_df = df.loc[df["day_next"] >= RAW_TEST_START_DAY].copy()
 
@@ -146,12 +159,7 @@ def fixed_chronological_split(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
 def compute_metrics(y_true: pd.Series, y_pred: np.ndarray) -> dict:
     mae_value = mean_absolute_error(y_true, y_pred)
     rmse_value = np.sqrt(mean_squared_error(y_true, y_pred))
-
-    if len(y_true) < 2:
-        r2_value = np.nan
-    else:
-        r2_value = r2_score(y_true, y_pred)
-
+    r2_value = np.nan if len(y_true) < 2 else r2_score(y_true, y_pred)
     return {"MAE": mae_value, "RMSE": rmse_value, "R2": r2_value}
 
 
@@ -198,30 +206,27 @@ def make_figures(test_df: pd.DataFrame, output_fig_dir: Path) -> None:
 
     plt.figure(figsize=(10, 5))
     day_values = pd.to_numeric(test_df["day_next"])
-    plt.plot(
-        day_values,
-        y_true - test_df["baseline_pred"],
-        marker="^",
-        label="Baseline residual",
-    )
+
     plt.plot(
         day_values,
         y_true - test_df["lr_pred"],
         marker="o",
-        label="LR residual",
+        linewidth=1.8,
+        label="Linear Regression residual",
     )
     plt.plot(
         day_values,
         y_true - test_df["tree_pred"],
         marker="s",
-        label="Tree residual",
+        linewidth=1.8,
+        label="Decision Tree residual",
     )
-    plt.axhline(0.0, linestyle="--")
+    plt.axhline(0.0, linestyle="--", linewidth=1.6)
 
-    plt.title("Residuals Over Day Index")
-    plt.xlabel("day_next")
-    plt.ylabel("Residual (y_true - pred)")
-    plt.xticks(day_values)
+    plt.title("Residuals Over Test Days")
+    plt.xlabel("Test day")
+    plt.ylabel("Residual (actual - predicted)")
+    plt.xticks(day_values, rotation=0)
     plt.legend()
     plt.tight_layout()
     plt.savefig(output_fig_dir / "residuals_over_day.png", dpi=150)
@@ -340,8 +345,7 @@ def main() -> None:
         ]
     ].copy()
 
-    predictions_path = output_dir / "predictions_test.csv"
-    predictions_df.to_csv(predictions_path, index=False)
+    predictions_df.to_csv(output_dir / "predictions_test.csv", index=False)
 
     metrics_rows = []
     for model_name, prediction_column in [
@@ -363,18 +367,13 @@ def main() -> None:
         )
 
     metrics_df = pd.DataFrame(metrics_rows, columns=["model", "MAE", "RMSE", "R2"])
-    metrics_path = output_dir / "metrics.csv"
-    metrics_df.to_csv(metrics_path, index=False)
+    metrics_df.to_csv(output_dir / "metrics.csv", index=False)
 
     readable_comparison_df = make_readable_comparison_table(predictions_df)
-    readable_comparison_path = output_dir / "predictions_readable.csv"
-    readable_comparison_df.to_csv(readable_comparison_path, index=False)
+    readable_comparison_df.to_csv(output_dir / "predictions_readable.csv", index=False)
 
-    coefficients_path = output_dir / "lr_coefficients.csv"
-    coefficients_df.to_csv(coefficients_path, index=False)
-
-    importances_path = output_dir / "tree_feature_importances.csv"
-    importances_df.to_csv(importances_path, index=False)
+    coefficients_df.to_csv(output_dir / "lr_coefficients.csv", index=False)
+    importances_df.to_csv(output_dir / "tree_feature_importances.csv", index=False)
 
     split_summary_df = pd.DataFrame(
         [
@@ -400,19 +399,15 @@ def main() -> None:
         f"Rows -> prepared: {len(prepared_df)}, train: {len(train_df)}, test: {len(test_df)}"
     )
     print("Train targets cover day_next = 2..60; test targets cover day_next = 61..90.")
-
     print("\nLinear Regression coefficients:")
     print(coefficients_df.to_string(index=False))
     print(f"Intercept: {float(lr_model.intercept_):.4f}")
-
     print("\nDecision Tree best params:")
     print(best_params)
     print("Feature importances:")
     print(importances_df.to_string(index=False))
-
     print("\nMetrics:")
     print(metrics_df.to_string(index=False))
-
     print("\nReadable predictions (actual vs baseline vs LR vs Tree):")
     print(readable_comparison_df.to_string(index=False))
 
